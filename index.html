@@ -82,7 +82,7 @@
                         <circle stroke="currentColor" fill="transparent" strokeWidth={stroke} strokeDasharray={circumference * 0.75 + " " + circumference * 0.25} r={normalizedRadius} cx={radius} cy={radius} className="text-gray-800" strokeLinecap="round" />
                         <circle stroke="currentColor" fill="transparent" strokeWidth={stroke} strokeDasharray={circumference} strokeDashoffset={offset} r={normalizedRadius} cx={radius} cy={radius} className={`${color} transition-all duration-1000 ease-out`} strokeLinecap="round" />
                     </svg>
-                    <!-- Center overlay: reduce font-size and remove upward margin so it sits well inside the gauge -->
+                    {/* Center overlay: reduce font-size and remove upward margin so it sits well inside the gauge */}
                     <div className="absolute inset-0 flex flex-col items-center justify-center">
                         <span className="text-gray-400 text-xs font-medium uppercase tracking-wider">{label}</span>
                         <span className={`text-3xl sm:text-4xl md:text-5xl font-bold ${color} tabular-nums leading-none`}>{Math.round(current)}°</span>
