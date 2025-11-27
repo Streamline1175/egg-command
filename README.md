@@ -1,6 +1,7 @@
 # 🥚 Egg Command Dashboard
 
-![Status](https://img.shields.io/badge/Status-Active-green) ![License](https://img.shields.io/badge/License-MIT-blue)
+![Status](https://img.shields.io/badge/Status-Active-green) ![License](https://img.shields.io/badge/License-MIT-blue) [![Live Demo](https://img.shields.io/badge/demo-live%20preview-success?style=for-the-badge&logo=html5)](https://YOUR_USERNAME.github.io/egg-command/demo/)
+
 
 **Egg Command** is a modern, dark-mode control center for **Big Green Egg Genius** and **Flame Boss** WiFi controllers. 
 
