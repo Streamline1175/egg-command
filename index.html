@@ -288,4 +288,19 @@
                                                     </div>
                                                 </div>
                                                 <div className="text-xl font-bold text-gray-400">{probe.temp > 0 ? probe.temp + '°' : '--'}</div>
-                             
+                                            </Card>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
