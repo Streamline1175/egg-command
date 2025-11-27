@@ -10,36 +10,52 @@ import {
  */
 
 // --- Utility: Linear Regression for Prediction ---
-const predictFinishTime = (history, currentTemp, targetTemp) => {
-  if (history.length < 10) return null; // Need data points
+const predictFinishTime = (history, currentTemp, targetTemp, options = {}) => {
+  // Robust predictor with simple smoothing and guardrails
+  // options: { minPoints, smoothWindow }
+  const minPoints = options.minPoints || 8;
+  const smoothWindow = options.smoothWindow || 3;
+
+  if (!history || history.length < minPoints) return null;
   if (currentTemp >= targetTemp) return "Done";
 
-  // Look at last 15 mins of data
-  const recentData = history.slice(-15);
-  const startTime = recentData[0].timestamp.getTime();
-  
-  // X = seconds elapsed, Y = temp
-  let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-  const n = recentData.length;
+  // Use recent subset but ensure we have enough
+  const recent = history.slice(-Math.max(minPoints, 12));
 
-  recentData.forEach(d => {
-    const x = (d.timestamp.getTime() - startTime) / 1000;
-    const y = d.meat1;
-    sumX += x;
-    sumY += y;
-    sumXY += x * y;
-    sumXX += x * x;
+  // Compute moving average to smooth noise
+  const smooth = recent.map((d, i, arr) => {
+    const start = Math.max(0, i - (smoothWindow - 1));
+    const window = arr.slice(start, i + 1).map(x => x.meat1);
+    const avg = window.reduce((a, b) => a + b, 0) / window.length;
+    return { timestamp: d.timestamp, val: avg };
   });
 
-  const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
-  
-  // If temp is dropping or stalling heavily, return null
-  if (slope <= 0.001) return "Stalled";
+  const startTime = smooth[0].timestamp.getTime();
+
+  // Linear regression on smoothed points
+  let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+  const n = smooth.length;
+  smooth.forEach(d => {
+    const x = (d.timestamp.getTime() - startTime) / 1000;
+    const y = d.val;
+    sumX += x; sumY += y; sumXY += x * y; sumXX += x * x;
+  });
+
+  const denom = (n * sumXX - sumX * sumX);
+  if (!denom) return null;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+
+  // Guard against non-positive slope or extremely small slopes that lead to absurd estimates
+  if (!isFinite(slope) || slope <= 0.0005) return "Stalled";
 
   const degreesNeeded = targetTemp - currentTemp;
   const secondsRemaining = degreesNeeded / slope;
-  
-  const finishDate = new Date(Date.now() + secondsRemaining * 1000);
+
+  // Clamp to a reasonable upper bound to avoid crazy dates (e.g., if slope tiny)
+  const maxHours = 48; // don't estimate more than 2 days for a cook
+  const clampedSeconds = Math.min(secondsRemaining, maxHours * 3600);
+
+  const finishDate = new Date(Date.now() + clampedSeconds * 1000);
   return finishDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
@@ -95,9 +111,15 @@ const TempGauge = ({ current, target, label, max = 500 }) => {
         <circle stroke="currentColor" fill="transparent" strokeWidth={stroke} strokeDasharray={circumference * 0.75 + " " + circumference * 0.25} r={normalizedRadius} cx={radius} cy={radius} className="text-gray-800" strokeLinecap="round" />
         <circle stroke="currentColor" fill="transparent" strokeWidth={stroke} strokeDasharray={circumference} strokeDashoffset={offset} r={normalizedRadius} cx={radius} cy={radius} className={`${color} transition-all duration-1000 ease-out`} strokeLinecap="round" />
       </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center mt-4">
+      {/*
+        Center overlay: reduce font-size and remove the upward margin so the number
+        sits cleanly inside the gauge without overlapping the outer ring. Use a
+        responsive size so larger screens can use a slightly bigger font but still
+        fit.
+      */}
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-gray-400 text-xs font-medium uppercase tracking-wider">{label}</span>
-        <span className={`text-5xl font-bold ${color} tabular-nums`}>{Math.round(current)}°</span>
+        <span className={`text-3xl sm:text-4xl md:text-5xl font-bold ${color} tabular-nums leading-none`}>{Math.round(current)}°</span>
         <span className="text-gray-500 text-sm mt-1 flex items-center gap-1"><Activity size={12} /> Set: {target}°</span>
       </div>
     </div>
@@ -199,11 +221,14 @@ export default function EggGeniusDashboard() {
       const newData = { pit: currentPit, meat1: currentMeat, timestamp: now };
       
       setHistory(prev => {
-        const newHist = [...prev.slice(-99), newData]; // Keep 100 pts
-        // Update prediction every update
-        setPrediction(predictFinishTime(newHist, currentMeat, 195));
-        return newHist;
-      });
+          const newHist = [...prev.slice(-99), newData]; // Keep 100 pts
+          // Use the probe 0 target from current state (fallback to 195)
+          const probeTarget = (prev && prev.length ? null : null); // noop - we only use status below
+          // prefer reading the configured probe target from the current status state
+          const target = status?.probes?.[0]?.target ?? 195;
+          setPrediction(predictFinishTime(newHist, currentMeat, target, {minPoints: 8, smoothWindow: 3}));
+          return newHist;
+        });
 
       setStatus({
         connected: true,
