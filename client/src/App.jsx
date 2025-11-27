@@ -95,7 +95,7 @@ const Button = ({ children, onClick, variant = "primary", className = "", disabl
 };
 
 const TempGauge = ({ current, target, label, max = 500 }) => {
-  const radius = 80;
+  const radius = 90;
   const stroke = 12;
   const normalizedRadius = radius - stroke * 2;
   const circumference = normalizedRadius * 2 * Math.PI;
@@ -119,7 +119,7 @@ const TempGauge = ({ current, target, label, max = 500 }) => {
       */}
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-gray-400 text-xs font-medium uppercase tracking-wider">{label}</span>
-        <span className={`text-3xl sm:text-4xl md:text-5xl font-bold ${color} tabular-nums leading-none`}>{Math.round(current)}°</span>
+        <span className={`text-2xl sm:text-3xl md:text-4xl font-bold ${color} tabular-nums leading-none`}>{Math.round(current)}°</span>
         <span className="text-gray-500 text-sm mt-1 flex items-center gap-1"><Activity size={12} /> Set: {target}°</span>
       </div>
     </div>
