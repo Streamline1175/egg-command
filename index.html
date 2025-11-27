@@ -67,7 +67,7 @@
         );
 
         const TempGauge = ({ current, target, label, max = 500 }) => {
-            const radius = 80;
+            const radius = 90;
             const stroke = 12;
             const normalizedRadius = radius - stroke * 2;
             const circumference = normalizedRadius * 2 * Math.PI;
@@ -85,7 +85,7 @@
                     {/* Center overlay: reduce font-size and remove upward margin so it sits well inside the gauge */}
                     <div className="absolute inset-0 flex flex-col items-center justify-center">
                         <span className="text-gray-400 text-xs font-medium uppercase tracking-wider">{label}</span>
-                        <span className={`text-3xl sm:text-4xl md:text-5xl font-bold ${color} tabular-nums leading-none`}>{Math.round(current)}°</span>
+                        <span className={`text-2xl sm:text-3xl md:text-4xl font-bold ${color} tabular-nums leading-none`}>{Math.round(current)}°</span>
                         <span className="text-gray-500 text-sm mt-1 flex items-center gap-1"><Icon name="Activity" size={12} /> Set: {target}°</span>
                     </div>
                 </div>
@@ -137,6 +137,8 @@
         };
 
         const TempChart = ({ data }) => {
+            const [tooltip, setTooltip] = React.useState({ visible: false, x: 0, y: 0, pit: 0, meat: 0, time: '' });
+
             if (!data || data.length < 2) return <div className="h-40 flex items-center justify-center text-gray-600 text-sm">Collecting simulation data...</div>;
 
             const height = 160;
@@ -156,13 +158,43 @@
                 return <polyline points={points} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />;
             };
 
+            const handleMouseMove = (e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const parentRect = e.currentTarget.parentElement.getBoundingClientRect();
+                const x = e.clientX - parentRect.left;
+                const svgX = ((e.clientX - rect.left) / rect.width) * width;
+                const index = Math.round((svgX - padding) / ((width - padding * 2) / (data.length - 1)));
+                if (index >= 0 && index < data.length) {
+                    const d = data[index];
+                    setTooltip({
+                        visible: true,
+                        x: x,
+                        y: e.clientY - parentRect.top,
+                        pit: d.pit,
+                        meat: d.meat1,
+                        time: d.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    });
+                }
+            };
+
+            const handleMouseLeave = () => {
+                setTooltip({ visible: false, x: 0, y: 0, pit: 0, meat: 0, time: '' });
+            };
+
             return (
-                <div className="w-full overflow-hidden">
-                    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-40">
-                        <line x1={padding} y1={getY(225)} x2={width-padding} y2={getY(225)} stroke="#374151" strokeDasharray="4 4" />
+                <div className="w-full relative">
+                    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-40" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
+                        <line x1={padding} y1={getY(225)} x2={width-padding} y2={getY(225)} stroke="#EF4444" strokeDasharray="4 4" />
                         {makePath('meat1', '#F59E0B')} 
                         {makePath('pit', '#10B981')}   
                     </svg>
+                    {tooltip.visible && (
+                        <div style={{ position: 'absolute', left: tooltip.x + 10, top: tooltip.y - 10, background: 'rgba(0,0,0,0.8)', color: 'white', padding: '5px', borderRadius: '3px', fontSize: '12px', pointerEvents: 'none', zIndex: 10 }}>
+                            Pit: {tooltip.pit.toFixed(1)}°<br/>
+                            Meat: {tooltip.meat.toFixed(1)}°<br/>
+                            {tooltip.time}
+                        </div>
+                    )}
                 </div>
             );
         };
