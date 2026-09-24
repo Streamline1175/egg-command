@@ -7,12 +7,13 @@
 
 **Egg Command** is a modern, dark-mode control center for **Big Green Egg Genius** and **Flame Boss** WiFi controllers. 
 
-Unlike the official mobile app, this dashboard runs entirely on your local network (Local First). It provides a larger visual interface, AI-based cook predictions, and voice announcements—perfect for running on a Raspberry Pi or laptop next to your smoker.
+It reads and **controls** the controller (pit set point, meat probe targets, alarm silence) using the official [Flame Boss MQTT API](https://github.com/flameboss/fb-api-doc) — either directly over your home network or through your Flame Boss / EGG Genius account. It provides a larger visual interface, cook-time predictions, and voice announcements—perfect for running on a Raspberry Pi or laptop next to your smoker.
 
 ## ✨ Key Features
 
-* **🚫 No Cloud Lag:** Connects directly to your device's local API.
-* **🧠 AI Cook Predictor:** Analyzes temperature trends to estimate exactly when your meat will hit target temp.
+* **🎛️ Real Control:** Change the pit set point and meat probe targets; every change is confirmed by the controller before the UI reports success.
+* **🏠 Local or Cloud:** Talk to the controller's built-in MQTT broker on your LAN, or sign in with your app account to use the Flame Boss cloud.
+* **🧠 Cook Predictor:** Analyzes temperature trends to estimate exactly when your meat will hit target temp.
 * **🗣️ Voice Announcements:** "Pork Butt is ready" or "Pit Temp High" spoken alerts so you don't have to watch the screen.
 * **📊 CSV Export:** One-click download of your cook history for Excel analysis.
 * **📱 Responsive:** Works beautifully on Phones, Tablets, and Desktops.
@@ -45,7 +46,7 @@ You need [Node.js](https://nodejs.org/) installed on your computer.
 5.  **Open your browser**
     Go to `http://localhost:3000`
 
-    *On the dashboard: Click Settings ⚙️ > Select "Live Device" > Enter your Egg Genius IP address.*
+    *On the dashboard: Click Settings ⚙️ and pick a data source (see [Connecting your controller](#-connecting-your-controller)).*
 
 ---
 
@@ -82,18 +83,41 @@ To run this 24/7 on a Raspberry Pi:
 
 ---
 
-## 🔧 Configuration Tips
+## 🔌 Connecting your controller
 
-### finding your Egg Genius IP
-The dashboard requires the local IP of your controller. 
-1.  Open your Router's admin page and look for "Client List".
-2.  Look for a device named "Espressif" or "FlameBoss".
-3.  **Note:** Ensure "Local Access" is turned ON in the official mobile app settings.
+Open Settings ⚙️ and choose a data source. Settings are saved on the server in `data/config.json` (git-ignored), so it reconnects by itself after a restart.
 
-### Customizing
-The frontend is built with **React** and **TailwindCSS**. 
-* Frontend code is in `/client/src`
-* Backend proxy is `server.js`
+### Option A — Flame Boss cloud (easiest)
+1. Choose **Flame Boss cloud** and sign in with the email/password you use in the EGG Genius / Flame Boss app.
+2. Click **Save & connect**. The first controller on your account is used; enter a **Device ID** to pick a specific one.
+
+Your password is sent once to `myflameboss.com` to obtain an MQTT token; only the token is stored.
+
+### Option B — Local network (no internet needed)
+1. In the official app, turn **Local Access** on for the controller.
+2. Find the controller's IP (router "client list", often shown as "Espressif" or "FlameBoss").
+3. Find the **Device PIN** (controller settings screen / app).
+4. Choose **Local network**, enter the IP and PIN, then **Save & connect**.
+
+This uses the controller's built-in MQTT broker on port 1883 (username `fb`, password = PIN).
+
+### Checking a connection from the command line
+```bash
+npm run probe -- --lan 192.168.1.50 --pin 123456
+npm run probe -- --cloud --email you@example.com --password 'your-password'
+```
+This prints every raw message from the controller with decoded temperatures — useful to confirm readings match the controller's display. The dashboard also shows the last 50 raw messages under Settings → *Raw controller messages*.
+
+### Safety
+* Set-point changes are limited to the controller's reported range and never go outside 122–698°F.
+* Changes larger than 50°F ask for confirmation.
+* Anyone who can open the dashboard can change the set point — only run it on a network you trust.
+
+## 🔧 Development
+* Frontend (React + Tailwind): `/client/src`
+* Server + controller connection: `server.js`, `lib/flameboss/`
+* Tests: `npm test` (runs against an in-process MQTT broker playing the controller and the cloud)
+* `npm run dev` runs the server and the Vite dev server together (Demo mode needs no hardware).
 
 ## 🤝 Contributing
 Got a feature idea? Pull requests are welcome! 
