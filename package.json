@@ -7,17 +7,19 @@
     "start": "node server.js",
     "dev": "concurrently \"node server.js\" \"cd client && npm run dev\"",
     "install-all": "npm install && cd client && npm install",
-    "build": "cd client && npm run build"
+    "build": "cd client && npm run build",
+    "test": "node --test test/*.test.js",
+    "probe": "node scripts/probe.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "cors": "^2.8.5",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "mqtt": "^5.16.0"
   },
   "devDependencies": {
+    "aedes": "^0.51.3",
     "concurrently": "^8.2.0"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   }
 }

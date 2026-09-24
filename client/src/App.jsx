@@ -1,480 +1,189 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { 
-  Settings, Thermometer, Fan, Wifi, WifiOff, Activity, Flame, 
-  Clock, RefreshCw, Power, Mic, MicOff, Download, TrendingUp, AlertTriangle 
-} from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Settings, Flame, Mic, MicOff, AlertTriangle, BellOff, RefreshCw } from 'lucide-react';
+import { Card, Button } from './components/ui';
+import PitPanel from './components/PitPanel';
+import ProbeCard from './components/ProbeCard';
+import TempChart from './components/TempChart';
+import SettingsPanel from './components/SettingsPanel';
+import { useDevice } from './hooks/useDevice';
+import { postJSON } from './lib/api';
 
 /**
- * BIG GREEN DASHBOARD V2
- * Enhanced with Predictive Algorithms, Voice Alerts, and Data Export
+ * EGG COMMAND
+ * Live dashboard and control for EGG Genius / Flame Boss controllers.
+ * The server (server.js) holds the controller connection; this UI renders
+ * its state from /api/events and sends commands to /api/control/*.
  */
 
-// --- Utility: Linear Regression for Prediction ---
-const predictFinishTime = (history, currentTemp, targetTemp, options = {}) => {
-  // Robust predictor with simple smoothing and guardrails
-  // options: { minPoints, smoothWindow }
-  const minPoints = options.minPoints || 8;
-  const smoothWindow = options.smoothWindow || 3;
-
-  if (!history || history.length < minPoints) return null;
-  if (currentTemp >= targetTemp) return "Done";
-
-  // Use recent subset but ensure we have enough
-  const recent = history.slice(-Math.max(minPoints, 12));
-
-  // Compute moving average to smooth noise
-  const smooth = recent.map((d, i, arr) => {
-    const start = Math.max(0, i - (smoothWindow - 1));
-    const window = arr.slice(start, i + 1).map(x => x.meat1);
-    const avg = window.reduce((a, b) => a + b, 0) / window.length;
-    return { timestamp: d.timestamp, val: avg };
-  });
-
-  const startTime = smooth[0].timestamp.getTime();
-
-  // Linear regression on smoothed points
-  let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-  const n = smooth.length;
-  smooth.forEach(d => {
-    const x = (d.timestamp.getTime() - startTime) / 1000;
-    const y = d.val;
-    sumX += x; sumY += y; sumXY += x * y; sumXX += x * x;
-  });
-
-  const denom = (n * sumXX - sumX * sumX);
-  if (!denom) return null;
-  const slope = (n * sumXY - sumX * sumY) / denom;
-
-  // Guard against non-positive slope or extremely small slopes that lead to absurd estimates
-  if (!isFinite(slope) || slope <= 0.0005) return "Stalled";
-
-  const degreesNeeded = targetTemp - currentTemp;
-  const secondsRemaining = degreesNeeded / slope;
-
-  // Clamp to a reasonable upper bound to avoid crazy dates (e.g., if slope tiny)
-  const maxHours = 48; // don't estimate more than 2 days for a cook
-  const clampedSeconds = Math.min(secondsRemaining, maxHours * 3600);
-
-  const finishDate = new Date(Date.now() + clampedSeconds * 1000);
-  return finishDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const readPref = (key, fallback) => {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+};
+const writePref = (key, value) => {
+  try {
+    localStorage.setItem(key, value);
+  } catch { /* private mode */ }
 };
 
-// --- Utility: Voice Engine ---
-const speak = (text, enabled) => {
-  if (!enabled || !window.speechSynthesis) return;
-  const utterance = new SpeechSynthesisUtterance(text);
-  window.speechSynthesis.speak(utterance);
+const speak = (text) => {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 };
 
-// --- Visual Components ---
-
-const Card = ({ children, className = "" }) => (
-  <div className={`bg-gray-800/50 backdrop-blur-md border border-gray-700 rounded-2xl p-6 ${className}`}>
-    {children}
-  </div>
-);
-
-const Button = ({ children, onClick, variant = "primary", className = "", disabled = false, size = "md" }) => {
-  const baseStyle = "rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed";
-  const sizes = {
-    sm: "px-3 py-1 text-xs",
-    md: "px-4 py-2 text-sm",
-    lg: "px-6 py-3 text-base"
-  };
-  const variants = {
-    primary: "bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20",
-    secondary: "bg-gray-700 hover:bg-gray-600 text-gray-200",
-    danger: "bg-red-900/30 text-red-400 border border-red-900/50 hover:bg-red-600/30",
-    ghost: "text-gray-400 hover:text-white hover:bg-gray-800"
-  };
-  return (
-    <button onClick={onClick} disabled={disabled} className={`${baseStyle} ${sizes[size]} ${variants[variant]} ${className}`}>
-      {children}
-    </button>
-  );
+const ALERT_TEXT = {
+  meat_done: (a, device) => `${device.probes[a.sensor - 1]?.label || `Meat probe ${a.sensor}`} is done`,
+  pit_out_of_range: () => 'Pit temperature is out of range',
+  vent_advice: () => 'Pit has been running hot. Consider closing the top vent',
+  probe_overtemp: (a) => `Probe ${a.sensor} is over temperature`,
+  device_overtemp: () => 'Controller is overheating',
 };
 
-const TempGauge = ({ current, target, label, max = 500 }) => {
-  const radius = 90;
-  const stroke = 12;
-  const normalizedRadius = radius - stroke * 2;
-  const circumference = normalizedRadius * 2 * Math.PI;
-  const offset = circumference - (current / max) * circumference * 0.75;
-  
-  const isHot = current > target + 10;
-  const isCold = current < target - 10;
-  const color = isHot ? "text-red-500" : isCold ? "text-blue-500" : "text-green-500";
+function StatusPill({ state, linkUp }) {
+  let tone = 'bg-gray-800 text-gray-400';
+  let text = 'Loading';
+  if (!linkUp) {
+    tone = 'bg-red-900/40 text-red-400';
+    text = 'Server offline';
+  } else if (state) {
+    const { status } = state.connection;
+    if (status === 'connected' && state.stale) { tone = 'bg-amber-900/40 text-amber-400'; text = 'No recent data'; }
+    else if (status === 'connected') { tone = 'bg-green-900/40 text-green-400'; text = state.mode === 'demo' ? 'Demo' : 'Live'; }
+    else if (status === 'connecting') { tone = 'bg-amber-900/40 text-amber-400'; text = 'Connecting'; }
+    else if (status === 'error') { tone = 'bg-red-900/40 text-red-400'; text = 'Error'; }
+    else text = 'Disconnected';
+  }
+  return <span className={`px-2 py-1 rounded-lg text-xs font-semibold ${tone}`}>{text}</span>;
+}
 
-  return (
-    <div className="relative flex flex-col items-center justify-center">
-      <svg height={radius * 2} width={radius * 2} className="rotate-[135deg]">
-        <circle stroke="currentColor" fill="transparent" strokeWidth={stroke} strokeDasharray={circumference * 0.75 + " " + circumference * 0.25} r={normalizedRadius} cx={radius} cy={radius} className="text-gray-800" strokeLinecap="round" />
-        <circle stroke="currentColor" fill="transparent" strokeWidth={stroke} strokeDasharray={circumference} strokeDashoffset={offset} r={normalizedRadius} cx={radius} cy={radius} className={`${color} transition-all duration-1000 ease-out`} strokeLinecap="round" />
-      </svg>
-      {/*
-        Center overlay: reduce font-size and remove the upward margin so the number
-        sits cleanly inside the gauge without overlapping the outer ring. Use a
-        responsive size so larger screens can use a slightly bigger font but still
-        fit.
-      */}
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-gray-400 text-xs font-medium uppercase tracking-wider">{label}</span>
-        <span className={`text-2xl sm:text-3xl md:text-4xl font-bold ${color} tabular-nums leading-none`}>{Math.round(current)}°</span>
-        <span className="text-gray-500 text-sm mt-1 flex items-center gap-1"><Activity size={12} /> Set: {target}°</span>
-      </div>
-    </div>
-  );
-};
+export default function App() {
+  const { state, history, linkUp, reload } = useDevice();
+  const [showSettings, setShowSettings] = useState(false);
+  const [unit, setUnitState] = useState(() => readPref('egg.unit', 'F'));
+  const [voice, setVoiceState] = useState(() => readPref('egg.voice', 'off') === 'on');
+  const [settingsOverride, setSettingsOverride] = useState(null);
+  const lastAlertAt = useRef(null);
 
-const FanMeter = ({ speed }) => (
-  <div className="flex items-center gap-4 w-full">
-    <div className={`p-3 rounded-full ${speed > 0 ? 'bg-green-900/30 text-green-400' : 'bg-gray-800 text-gray-500'}`}>
-      <Fan size={24} className={speed > 0 ? 'animate-spin-slow' : ''} style={{ animationDuration: `${3000 / (speed || 1)}ms` }} />
-    </div>
-    <div className="flex-1">
-      <div className="flex justify-between mb-1">
-        <span className="text-sm font-medium text-gray-400">Fan Output</span>
-        <span className="text-sm font-bold text-white">{speed}%</span>
-      </div>
-      <div className="h-3 w-full bg-gray-800 rounded-full overflow-hidden">
-        <div className="h-full bg-gradient-to-r from-green-600 to-emerald-400 transition-all duration-500" style={{ width: `${speed}%` }} />
-      </div>
-    </div>
-  </div>
-);
+  const setUnit = (u) => { setUnitState(u); writePref('egg.unit', u); };
+  const setVoice = (v) => { setVoiceState(v); writePref('egg.voice', v ? 'on' : 'off'); };
 
-const TempChart = ({ data }) => {
-  const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, pit: 0, meat: 0, time: '' });
+  const device = state?.device;
+  const settings = settingsOverride || state?.settings;
+  const connected = state?.connection.status === 'connected';
 
-  if (!data || data.length < 2) return <div className="h-40 flex items-center justify-center text-gray-600">Waiting for data...</div>;
+  // Announce new device alerts (only ones that arrive after the page loads).
+  useEffect(() => {
+    const alerts = device?.alerts || [];
+    const newest = alerts[alerts.length - 1];
+    if (lastAlertAt.current == null) {
+      lastAlertAt.current = newest?.at ?? 0;
+      return;
+    }
+    alerts.filter((a) => a.at > lastAlertAt.current).forEach((a) => {
+      const text = ALERT_TEXT[a.type]?.(a, device);
+      if (text && voice) speak(text);
+    });
+    if (newest) lastAlertAt.current = Math.max(lastAlertAt.current, newest.at);
+  }, [device?.alerts, voice]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const height = 160;
-  const width = 600;
-  const padding = 20;
-
-  const allTemps = data.flatMap(d => [d.pit, d.meat1]);
-  const maxTemp = Math.max(...allTemps) + 20;
-  const minTemp = Math.min(...allTemps) - 20;
-  const range = maxTemp - minTemp || 100;
-
-  const getX = (index) => (index / (data.length - 1)) * (width - padding * 2) + padding;
-  const getY = (temp) => height - padding - ((temp - minTemp) / range) * (height - padding * 2);
-
-  const makePath = (key, color) => {
-    const points = data.map((d, i) => `${getX(i)},${getY(d[key])}`).join(" ");
-    return <polyline points={points} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />;
-  };
-
-  const handleMouseMove = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const parentRect = e.currentTarget.parentElement.getBoundingClientRect();
-    const x = e.clientX - parentRect.left;
-    const svgX = ((e.clientX - rect.left) / rect.width) * width;
-    const index = Math.round((svgX - padding) / ((width - padding * 2) / (data.length - 1)));
-    if (index >= 0 && index < data.length) {
-      const d = data[index];
-      setTooltip({
-        visible: true,
-        x: x,
-        y: e.clientY - parentRect.top,
-        pit: d.pit,
-        meat: d.meat1,
-        time: d.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      });
+  const onSettingsSaved = (next, { reconnect } = {}) => {
+    setSettingsOverride(next);
+    if (reconnect) {
+      reload();
+      setShowSettings(false);
     }
   };
+  // Once the stream delivers fresh settings, stop overriding.
+  useEffect(() => setSettingsOverride(null), [state?.settings]);
 
-  const handleMouseLeave = () => {
-    setTooltip({ visible: false, x: 0, y: 0, pit: 0, meat: 0, time: '' });
-  };
-
-  return (
-    <div className="w-full relative">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-40" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
-        <line x1={padding} y1={getY(225)} x2={width-padding} y2={getY(225)} stroke="#EF4444" strokeDasharray="4 4" />
-        {makePath('meat1', '#F59E0B')} 
-        {makePath('pit', '#10B981')}   
-      </svg>
-      {tooltip.visible && (
-        <div style={{ position: 'absolute', left: tooltip.x + 10, top: tooltip.y - 10, background: 'rgba(0,0,0,0.8)', color: 'white', padding: '5px', borderRadius: '3px', fontSize: '12px', pointerEvents: 'none', zIndex: 10 }}>
-          Pit: {tooltip.pit.toFixed(1)}°<br/>
-          Meat: {tooltip.meat.toFixed(1)}°<br/>
-          {tooltip.time}
-        </div>
-      )}
-    </div>
-  );
-};
-
-// --- Main Application ---
-
-export default function EggGeniusDashboard() {
-  const [config, setConfig] = useState({
-    mode: 'demo',
-    ipAddress: '192.168.1.50',
-    refreshRate: 3000,
-    voiceEnabled: false
-  });
-
-  const [status, setStatus] = useState({
-    connected: false,
-    lastUpdate: null,
-    pitTemp: 0,
-    pitSet: 225,
-    fanSpeed: 0,
-    probes: [
-      { id: 1, name: 'Pork Shoulder', temp: 0, target: 195 },
-      { id: 2, name: 'Ambient', temp: 0, target: 0 },
-    ]
-  });
-
-  const [history, setHistory] = useState([]);
-  const [prediction, setPrediction] = useState(null);
-  const [showSettings, setShowSettings] = useState(false);
-  const [alerts, setAlerts] = useState([]);
-
-  // Mock Data & Simulation
-  useEffect(() => {
-    if (config.mode !== 'demo') return;
-
-    let currentPit = 215;
-    let currentMeat = 150;
-    let currentFan = 20;
-
-    const interval = setInterval(() => {
-      // Simulation Logic
-      const diff = 225 - currentPit;
-      currentPit += (diff * 0.1) + (Math.random() - 0.5) * 1.5;
-      currentMeat += 0.05 + (Math.random() * 0.05); // Slow rise
-      if (currentPit < 225) currentFan = Math.min(100, currentFan + 2);
-      else currentFan = Math.max(0, currentFan - 2);
-
-      const now = new Date();
-      const newData = { pit: currentPit, meat1: currentMeat, timestamp: now };
-      
-      setHistory(prev => {
-          const newHist = [...prev.slice(-99), newData]; // Keep 100 pts
-          // Use the probe 0 target from current state (fallback to 195)
-          const probeTarget = (prev && prev.length ? null : null); // noop - we only use status below
-          // prefer reading the configured probe target from the current status state
-          const target = status?.probes?.[0]?.target ?? 195;
-          setPrediction(predictFinishTime(newHist, currentMeat, target, {minPoints: 8, smoothWindow: 3}));
-          return newHist;
-        });
-
-      setStatus({
-        connected: true,
-        lastUpdate: now,
-        pitTemp: currentPit,
-        pitSet: 225,
-        fanSpeed: Math.round(currentFan),
-        probes: [
-          { id: 1, name: 'Pork Shoulder', temp: currentMeat, target: 195 },
-          { id: 2, name: 'Ambient', temp: currentPit - 15, target: 0 },
-        ]
-      });
-      
-      // Voice Check
-      if (Math.random() > 0.95 && config.voiceEnabled) {
-         // Random voice event for demo
-         // speak(`Pit temperature is ${Math.round(currentPit)} degrees`, true);
-      }
-
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [config.mode, config.voiceEnabled]);
-
-  // Handle Export
-  const downloadData = () => {
-    const headers = ["Timestamp,Pit Temp,Meat 1 Temp,Fan Speed\n"];
-    const rows = history.map(h => 
-      `${h.timestamp.toISOString()},${h.pit.toFixed(1)},${h.meat1.toFixed(1)},${status.fanSpeed}`
-    );
-    const blob = new Blob([...headers, ...rows], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `cook_log_${new Date().toISOString().slice(0,10)}.csv`;
-    a.click();
-  };
+  const recentAlerts = (device?.alerts || []).filter((a) => Date.now() - a.at < 10 * 60000);
 
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100 font-sans pb-20">
-      
-      {/* Header */}
-      <header className="bg-gray-900 border-b border-gray-800 sticky top-0 z-50 backdrop-blur-lg bg-opacity-90">
-        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+    <div className="min-h-screen bg-gray-950 text-gray-100 font-sans pb-10">
+      <header className="bg-gray-900/90 border-b border-gray-800 sticky top-0 z-50 backdrop-blur-lg">
+        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
             <div className="bg-gradient-to-br from-green-500 to-green-700 p-2 rounded-lg shadow-lg shadow-green-900/50">
               <Flame size={20} className="text-white fill-white" />
             </div>
-            <div>
+            <div className="min-w-0">
               <h1 className="font-bold text-lg leading-tight tracking-tight">Egg Command</h1>
-              <p className="text-[10px] text-gray-500 font-medium uppercase tracking-widest">Enhanced Monitor v2.0</p>
+              <p className="text-[10px] text-gray-500 font-medium uppercase tracking-widest truncate">
+                {device?.deviceId ? `Controller ${device.deviceId}` : 'EGG Genius / Flame Boss'}
+              </p>
             </div>
           </div>
-          
-          <div className="flex items-center gap-2">
-             {/* Voice Toggle */}
-            <button 
-              onClick={() => setConfig(prev => ({...prev, voiceEnabled: !prev.voiceEnabled}))}
-              className={`p-2 rounded-lg transition-colors ${config.voiceEnabled ? 'bg-indigo-900/30 text-indigo-400' : 'text-gray-600 hover:bg-gray-800'}`}
-              title="Voice Announcements"
+          <div className="flex items-center gap-1">
+            <StatusPill state={state} linkUp={linkUp} />
+            <button
+              type="button"
+              onClick={() => setVoice(!voice)}
+              className={`p-2 rounded-lg transition-colors ${voice ? 'bg-indigo-900/30 text-indigo-400' : 'text-gray-600 hover:bg-gray-800'}`}
+              title="Voice announcements"
             >
-              {config.voiceEnabled ? <Mic size={20} /> : <MicOff size={20} />}
+              {voice ? <Mic size={20} /> : <MicOff size={20} />}
             </button>
-
-            <button 
-              onClick={() => setShowSettings(!showSettings)}
-              className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
-            >
+            <button type="button" onClick={() => setShowSettings(!showSettings)} className="p-2 hover:bg-gray-800 rounded-lg transition-colors" title="Settings">
               <Settings size={20} className="text-gray-400" />
             </button>
           </div>
         </div>
       </header>
 
-      {/* Settings Panel */}
-      {showSettings && (
-        <div className="max-w-5xl mx-auto px-4 py-4 animate-in slide-in-from-top-4">
-          <Card className="bg-gray-900 border-gray-800">
-            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">Configuration</h3>
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="space-y-4">
-                <div>
-                  <label className="text-xs text-gray-500 uppercase font-bold">Data Source</label>
-                  <div className="flex p-1 bg-gray-950 rounded-lg mt-1 border border-gray-800">
-                    <button onClick={() => setConfig({...config, mode: 'demo'})} className={`flex-1 py-2 text-sm font-medium rounded-md ${config.mode === 'demo' ? 'bg-gray-800 text-white' : 'text-gray-500'}`}>Demo</button>
-                    <button onClick={() => setConfig({...config, mode: 'live'})} className={`flex-1 py-2 text-sm font-medium rounded-md ${config.mode === 'live' ? 'bg-green-700 text-white' : 'text-gray-500'}`}>Live Device</button>
-                  </div>
-                </div>
-                {config.mode === 'live' && (
-                  <input type="text" value={config.ipAddress} onChange={(e) => setConfig({...config, ipAddress: e.target.value})} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2 font-mono text-sm" />
-                )}
-              </div>
-              <div className="space-y-4">
-                 <div className="flex justify-between items-center p-3 bg-gray-950 rounded-lg border border-gray-800">
-                    <span className="text-sm text-gray-400">Export Cook Log</span>
-                    <Button size="sm" variant="secondary" onClick={downloadData}><Download size={14} /> CSV</Button>
-                 </div>
-              </div>
-            </div>
-          </Card>
+      {showSettings && settings && (
+        <div className="max-w-5xl mx-auto px-4 pt-4">
+          <SettingsPanel settings={settings} unit={unit} setUnit={setUnit} history={history} onSaved={onSettingsSaved} />
         </div>
       )}
 
-      {/* Main Grid */}
       <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
-        
-        {/* Connection Status Banner (if offline) */}
-        {!status.connected && config.mode === 'live' && (
-          <div className="bg-red-900/20 border border-red-900/50 text-red-400 p-4 rounded-xl flex items-center gap-3">
-            <AlertTriangle size={20} />
+        {state?.connection.status === 'error' && (
+          <div className="bg-red-900/20 border border-red-900/50 text-red-400 p-4 rounded-xl flex items-start gap-3">
+            <AlertTriangle size={20} className="shrink-0" />
             <div className="text-sm">
-              <span className="font-bold">Connection Failed.</span> Ensure your device is on the same network and you are using a CORS extension or proxy.
+              <span className="font-bold">Can't reach the controller.</span> {state.connection.error}
             </div>
           </div>
         )}
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          
-          {/* Left Column: Gauges (4 cols) */}
-          <div className="lg:col-span-4 space-y-6">
-            <Card className="flex flex-col items-center relative overflow-hidden h-full min-h-[300px]">
-              <div className={`absolute top-0 w-full h-1 bg-gradient-to-r from-transparent via-${Math.abs(status.pitTemp - status.pitSet) < 10 ? 'green' : 'red'}-500 to-transparent opacity-75`} />
-              
-              <div className="w-full flex justify-between items-center mb-6">
-                <span className="font-bold text-gray-400 text-sm tracking-wider">PIT CONTROL</span>
-                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${status.fanSpeed > 0 ? 'bg-green-900 text-green-400' : 'bg-gray-700 text-gray-400'}`}>
-                  {status.fanSpeed > 0 ? 'ACTIVE' : 'IDLE'}
-                </span>
-              </div>
-
-              <TempGauge current={status.pitTemp} target={status.pitSet} label={Math.abs(status.pitTemp - status.pitSet) < 5 ? "LOCKED" : "ADJUSTING"} />
-              
-              <div className="w-full mt-auto pt-6">
-                <FanMeter speed={status.fanSpeed} />
-              </div>
-            </Card>
+        {state?.stale && (
+          <div className="bg-amber-900/20 border border-amber-900/50 text-amber-300 p-4 rounded-xl flex items-center gap-3">
+            <AlertTriangle size={20} className="shrink-0" />
+            <div className="text-sm flex-1">No readings from the controller for over a minute. Values below may be out of date.</div>
+            <Button size="sm" variant="secondary" onClick={() => postJSON('/api/control/sync').catch(() => {})}><RefreshCw size={14} /> Refresh</Button>
           </div>
+        )}
+        {recentAlerts.length > 0 && (
+          <div className="bg-orange-900/20 border border-orange-700/50 text-orange-300 p-4 rounded-xl flex items-center gap-3">
+            <AlertTriangle size={20} className="shrink-0" />
+            <div className="text-sm flex-1">{ALERT_TEXT[recentAlerts[recentAlerts.length - 1].type]?.(recentAlerts[recentAlerts.length - 1], device)}</div>
+            <Button size="sm" variant="secondary" onClick={() => postJSON('/api/control/alarm-ack').catch(() => {})}><BellOff size={14} /> Silence</Button>
+          </div>
+        )}
+        {state?.connection.status === 'connecting' && !device?.lastTempsAt && (
+          <Card className="text-sm text-gray-400">Connecting to the controller{state.connection.detail ? ` (${state.connection.detail})` : ''}…</Card>
+        )}
 
-          {/* Right Column: Data & Probes (8 cols) */}
-          <div className="lg:col-span-8 flex flex-col gap-6">
-            
-            {/* Main Graph Card */}
-            <Card className="h-64 flex flex-col justify-between">
-              <div className="flex justify-between items-start mb-2">
-                 <div>
-                   <h2 className="text-gray-300 font-bold">Temperature History</h2>
-                   <p className="text-xs text-gray-500">Real-time sampling (3s interval)</p>
-                 </div>
-                 <div className="flex items-center gap-4 text-xs">
-                    <span className="flex items-center gap-1 text-green-400"><div className="w-2 h-2 rounded-full bg-green-500"/> Pit</span>
-                    <span className="flex items-center gap-1 text-amber-400"><div className="w-2 h-2 rounded-full bg-amber-500"/> Meat</span>
-                 </div>
+        {device && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-4">
+              <PitPanel device={device} range={state.setPointRange} unit={unit} canControl={connected} />
+            </div>
+            <div className="lg:col-span-8 flex flex-col gap-6">
+              <Card>
+                <h2 className="text-gray-300 font-bold mb-2">Temperature History</h2>
+                <TempChart history={history} unit={unit} probes={device.probes} />
+              </Card>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {device.probes.map((p) => (
+                  <ProbeCard key={p.index} probe={p} history={history} unit={unit} canControl={connected} />
+                ))}
               </div>
-              <TempChart data={history} />
-            </Card>
-
-            {/* Probes Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              
-              {/* Meat Probe 1 */}
-              <Card className="p-4 relative group hover:border-amber-500/50 transition-colors">
-                 <div className="flex justify-between items-start mb-2">
-                    <div className="flex items-center gap-2">
-                       <TrendingUp size={16} className="text-amber-500" />
-                       <span className="font-bold text-gray-200">{status.probes[0].name}</span>
-                    </div>
-                    <span className="text-2xl font-bold text-white tabular-nums">{Math.round(status.probes[0].temp)}°</span>
-                 </div>
-                 
-                 {/* AI Prediction Badge */}
-                 {prediction && (
-                   <div className="mb-3 bg-indigo-900/20 border border-indigo-500/30 rounded-lg p-2 flex items-center justify-between">
-                      <span className="text-xs text-indigo-300 font-medium flex items-center gap-1">
-                        <Clock size={12} /> AI Estimate
-                      </span>
-                      <span className="text-xs font-bold text-indigo-200">{prediction}</span>
-                   </div>
-                 )}
-
-                 <div className="space-y-1">
-                    <div className="flex justify-between text-xs text-gray-500">
-                       <span>Current</span>
-                       <span>Target: {status.probes[0].target}°</span>
-                    </div>
-                    <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden">
-                      <div className="h-full bg-amber-500" style={{ width: `${(status.probes[0].temp / status.probes[0].target) * 100}%` }} />
-                    </div>
-                 </div>
-              </Card>
-
-              {/* Ambient Probe */}
-              <Card className="p-4 flex flex-col justify-center">
-                 <div className="flex justify-between items-center mb-1">
-                    <span className="font-bold text-gray-400 text-sm">Ambient Temp</span>
-                    <span className="text-xl font-bold text-gray-300">{Math.round(status.probes[1].temp)}°</span>
-                 </div>
-                 <div className="text-xs text-gray-500">
-                   External sensor monitoring
-                 </div>
-              </Card>
             </div>
           </div>
-        </div>
-
-        {/* Floating Action Bar */}
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900/90 backdrop-blur-xl border border-gray-700 shadow-2xl rounded-2xl p-1.5 flex gap-1 z-40">
-           <Button variant="ghost" size="sm" onClick={() => speak("System checks nominal", true)}>Test Audio</Button>
-           <div className="w-px bg-gray-700 mx-1"></div>
-           <Button variant="secondary" size="sm">Keep Warm</Button>
-           <Button variant="primary" size="sm">Boost Fan</Button>
-        </div>
-
+        )}
       </main>
     </div>
   );
 }
-
-          
